@@ -17,7 +17,6 @@
   --accent:#f5c518;
   --radius:12px;
 }
-
 *{box-sizing:border-box}
 body{
   margin:0;
@@ -63,10 +62,8 @@ section.card{
   background:var(--bg-card);
   border-radius:var(--radius);
   padding:12px;
-  margin-bottom:12px;
 }
 section.card.active{display:block}
-h3{margin:0 0 6px 0}
 button.action{
   width:100%;
   padding:8px;
@@ -107,7 +104,12 @@ th,td{
 
 <section class="card active" id="career">
   <h3>Career</h3>
-  <button class="action" onclick="simGames(10)">Sim 10 Games</button>
+  <div class="log">
+    Season <span id="seasonYear"></span> —
+    Game <span id="seasonGame"></span>/82 —
+    Week <span id="seasonWeek"></span>
+  </div>
+  <button class="action" onclick="nextGame()">Next Game</button>
   <button class="action" onclick="demandRole()">Demand Bigger Role</button>
 </section>
 
@@ -140,15 +142,28 @@ th,td{
 /* ===== UTIL ===== */
 function rand(min,max){return Math.floor(min+Math.random()*(max-min))}
 function calcOVR(r){
-  return Math.round((r.shooting+r.finishing+r.playmaking+r.defense+r.athleticism+r.iq+r.mental)/7)
+  return Math.round(
+    (r.shooting+r.finishing+r.playmaking+
+     r.defense+r.athleticism+r.iq+r.mental)/7
+  );
 }
+
+/* ===== SEASON ===== */
+let season={year:1,gamesPlayed:0,maxGames:82,week:1,phase:"regular"};
+
+/* ===== ROLE USAGE ===== */
+const ROLE_USAGE={
+  Primary:0.32,
+  Secondary:0.24,
+  "3&D":0.16,
+  Bench:0.10
+};
 
 /* ===== PLAYER GEN ===== */
 function genPlayer(team){
-  const f=["Jalen","Marcus","Devin","Tyrese","Andre","Cole"];
-  const l=["Williams","Brooks","Harris","Knight","Carter","Reed"];
   return{
-    name:`${f[rand(0,f.length)]} ${l[rand(0,l.length)]}`,
+    name:["Jalen","Marcus","Devin","Tyrese","Andre","Cole"][rand(0,6)]+" "+
+         ["Williams","Brooks","Harris","Knight","Carter","Reed"][rand(0,6)],
     pos:["PG","SG","SF","PF","C"][rand(0,5)],
     team,
     ratings:{
@@ -163,9 +178,11 @@ function genPlayer(team){
     hidden:{consistency:Math.random(),ego:Math.random()},
     role:"Bench",
     minutes:12,
+    fatigue:0,
     stats:{g:0,pts:0},
+    career:{games:0,points:0},
     isUser:false
-  }
+  };
 }
 
 /* ===== LEAGUE ===== */
@@ -198,38 +215,84 @@ const user=league.players[rand(0,league.players.length)];
 user.isUser=true;
 const userTeam=league.teams[user.team];
 
-/* ===== SIM ===== */
+/* ===== PLAYER GAME SIM (REFACTORED) ===== */
 function simGame(p,t){
-  const touches=t.pace*(p.minutes/48)*0.2;
-  const skill=(p.ratings.shooting+p.ratings.finishing)/200;
-  const pts=Math.round(touches*skill*2);
+  const usage=ROLE_USAGE[p.role]||0.1;
+  const fatiguePenalty=1-Math.min(p.fatigue*0.015,0.35);
+
+  const touches=t.pace*(p.minutes/48)*usage;
+  const skill=(
+    p.ratings.shooting*0.4 +
+    p.ratings.finishing*0.3 +
+    p.ratings.mental*0.2 +
+    p.ratings.iq*0.1
+  )/100;
+
+  const variance=1+(Math.random()-0.5)*(1-p.hidden.consistency);
+  const pts=Math.max(0,Math.round(touches*skill*variance*fatiguePenalty));
+
   p.stats.g++; p.stats.pts+=pts;
+  p.career.games++; p.career.points+=pts;
+  p.fatigue+=p.minutes/48;
 }
-function simGames(n){
-  for(let i=0;i<n;i++){
-    Object.values(league.teams).forEach(t=>{
-      t.roster.forEach(p=>simGame(p,t));
-    });
+
+/* ===== NEXT GAME ===== */
+function nextGame(){
+  if(season.gamesPlayed>=season.maxGames){ endSeason(); return; }
+
+  Object.values(league.teams).forEach(t=>{
+    t.roster.forEach(p=>simGame(p,t));
+  });
+
+  season.gamesPlayed++;
+
+  if(season.gamesPlayed%4===0){
+    season.week++;
+    league.players.forEach(p=>p.fatigue=Math.max(0,p.fatigue-0.8));
+    log(`Week ${season.week} recovery`);
   }
-  log(`Simmed ${n} games`);
+
+  log(`Game ${season.gamesPlayed} completed`);
+  render();
+}
+
+/* ===== SEASON END ===== */
+function endSeason(){
+  log(`Season ${season.year} complete`);
+  log(`You averaged ${(user.stats.pts/user.stats.g).toFixed(1)} PPG`);
+
+  league.players.forEach(p=>{
+    Object.keys(p.ratings).forEach(r=>{
+      p.ratings[r]=Math.max(40,Math.min(99,p.ratings[r]+rand(-3,4)));
+    });
+    p.stats={g:0,pts:0};
+    p.fatigue=0;
+  });
+
+  season.year++;
+  season.gamesPlayed=0;
+  season.week=1;
+  Object.values(league.teams).forEach(assignRoles);
+  log(`Season ${season.year} begins`);
   render();
 }
 
 /* ===== TRAINING ===== */
 function train(stat){
   user.ratings[stat]=Math.min(99,user.ratings[stat]+rand(1,3));
-  log(`Focused training on ${stat}`);
+  assignRoles(userTeam);
+  log(`Training: ${stat}`);
   render();
 }
 
-/* ===== AGGRESSION ===== */
+/* ===== ROLE DEMAND ===== */
 function demandRole(){
   if(Math.random()<user.hidden.ego){
     user.role="Primary";
-    log("Coach reluctantly gives you a bigger role");
+    log("Coach increases your role");
   }else{
     user.role="Bench";
-    log("Coach benches you harder");
+    log("Coach limits your role");
   }
   assignRoles(userTeam);
   render();
@@ -243,14 +306,27 @@ function log(msg){
 
 /* ===== RENDER ===== */
 function render(){
+  document.getElementById("seasonYear").textContent=season.year;
+  document.getElementById("seasonGame").textContent=season.gamesPlayed;
+  document.getElementById("seasonWeek").textContent=season.week;
+
   document.getElementById("playerInfo").innerHTML=`
     <b>${user.name}</b><br>
     ${user.pos} | ${user.team} | ${user.role}<br>
-    OVR ${calcOVR(user.ratings)} | PPG ${(user.stats.pts/user.stats.g||0).toFixed(1)}
+    Minutes: ${user.minutes} |
+    Usage: ${(ROLE_USAGE[user.role]*100).toFixed(0)}% |
+    Fatigue: ${(user.fatigue*10).toFixed(0)}%<br>
+    OVR ${calcOVR(user.ratings)} |
+    PPG ${(user.stats.pts/user.stats.g||0).toFixed(1)}<br>
+    <span class="muted">
+      Career: ${user.career.games} GP · ${user.career.points} PTS
+    </span>
     <table>
-      ${Object.entries(user.ratings).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join("")}
+      ${Object.entries(user.ratings).map(([k,v])=>`
+        <tr><td>${k}</td><td>${v}</td></tr>`).join("")}
     </table>
   `;
+
   document.getElementById("teamInfo").innerHTML=`
     <table>
       <tr><th>Name</th><th>OVR</th><th>Role</th></tr>
